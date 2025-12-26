@@ -1,21 +1,21 @@
 # SkySentinel Backend
 
-Sistema Inteligente de Vigilancia Aeroespacial - Backend API
+Intelligent Aerospace Surveillance System - Backend API
 
-## Descripción
+## Description
 
-SkySentinel es un middleware geoespacial que conecta datos de aeronaves en tiempo real desde OpenSky Network API con agentes de Inteligencia Artificial. El backend está construido con FastAPI y sirve datos en formato GeoJSON optimizado para visualización en mapas y análisis con IA.
+SkySentinel is a geospatial middleware that connects real-time aircraft data from OpenSky Network API with Artificial Intelligence agents. The backend is built with FastAPI and serves data in GeoJSON format optimized for map visualization and AI analysis.
 
-## Características
+## Features
 
-- **OpenSky Network Integration**: Datos de aeronaves en tiempo real
-- **GeoJSON Output**: Formato optimizado para mapas y IA
-- **FastAPI Backend**: API REST rápida y moderna
-- **CORS Enabled**: Listo para integración con frontend
-- **Regional Filtering**: Soporte para bounding box queries
-- **Docker Ready**: Fácil despliegue en la nube
+- **OpenSky Network Integration**: Real-time aircraft data
+- **GeoJSON Output**: Optimized format for maps and AI
+- **FastAPI Backend**: Fast and modern REST API
+- **CORS Enabled**: Ready for frontend integration
+- **Regional Filtering**: Bounding box query support
+- **Docker Ready**: Easy cloud deployment
 
-## Arquitectura
+## Architecture
 
 ```
 OpenSky Network API → SkySentinel Backend (FastAPI) → Frontend (Vue.js/Leaflet)
@@ -23,40 +23,40 @@ OpenSky Network API → SkySentinel Backend (FastAPI) → Frontend (Vue.js/Leafl
                                                  Gemini AI
 ```
 
-## Instalación
+## Installation
 
-### Requisitos
+### Requirements
 
 - Python 3.11+
 - pip
 
-### Setup Local
+### Local Setup
 
-1. Crear entorno virtual:
+1. Create virtual environment:
 ```bash
 python3 -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-2. Instalar dependencias:
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Configurar variables de entorno (opcional):
+3. Configure environment variables (optional):
 ```bash
 cp .env.example .env
-# Editar .env con tus credenciales de OpenSky (opcional)
+# Edit .env with your OpenSky credentials (optional)
 ```
 
-4. Ejecutar servidor:
+4. Run server:
 ```bash
 python app/main.py
-# O usar uvicorn directamente:
+# Or use uvicorn directly:
 uvicorn app.main:app --reload
 ```
 
-El servidor estará disponible en `http://localhost:8000`
+The server will be available at `http://localhost:8000`
 
 ## API Endpoints
 
@@ -70,12 +70,12 @@ GET /
 GET /api/v1/airspace?limit=50
 ```
 
-Retorna datos de aeronaves en formato GeoJSON FeatureCollection.
+Returns aircraft data in GeoJSON FeatureCollection format.
 
-**Parámetros:**
-- `limit` (opcional): Número máximo de aeronaves a retornar (default: 50)
+**Parameters:**
+- `limit` (optional): Maximum number of aircraft to return (default: 50)
 
-**Respuesta:**
+**Response:**
 ```json
 {
   "type": "FeatureCollection",
@@ -110,13 +110,13 @@ Retorna datos de aeronaves en formato GeoJSON FeatureCollection.
 GET /api/v1/airspace/region?min_lat=37&max_lat=38&min_lon=-123&max_lon=-122
 ```
 
-Retorna datos de aeronaves dentro de una región específica (bounding box).
+Returns aircraft data within a specific region (bounding box).
 
-**Parámetros:**
-- `min_lat`: Latitud mínima
-- `max_lat`: Latitud máxima
-- `min_lon`: Longitud mínima
-- `max_lon`: Longitud máxima
+**Parameters:**
+- `min_lat`: Minimum latitude
+- `max_lat`: Maximum latitude
+- `min_lon`: Minimum longitude
+- `max_lon`: Maximum longitude
 
 ## Docker
 
@@ -130,16 +130,16 @@ docker build -t skysentinel-backend .
 docker run -p 8000:8000 skysentinel-backend
 ```
 
-## Despliegue en la Nube
+## Cloud Deployment
 
-### Google Cloud Run (Recomendado)
+### Google Cloud Run (Recommended)
 
-1. Build y push a Container Registry:
+1. Build and push to Container Registry:
 ```bash
 gcloud builds submit --tag gcr.io/[PROJECT-ID]/skysentinel-backend
 ```
 
-2. Deploy a Cloud Run:
+2. Deploy to Cloud Run:
 ```bash
 gcloud run deploy skysentinel-backend \
   --image gcr.io/[PROJECT-ID]/skysentinel-backend \
@@ -150,45 +150,45 @@ gcloud run deploy skysentinel-backend \
 
 ### AWS App Runner
 
-1. Conectar con GitHub
-2. Configurar auto-deploy desde el repositorio
-3. Especificar puerto 8000
+1. Connect with GitHub
+2. Configure auto-deploy from repository
+3. Specify port 8000
 
-## Integración con Frontend
+## Frontend Integration
 
-El backend está diseñado para integrarse con el proyecto Vue.js existente:
+The backend is designed to integrate with the existing Vue.js project:
 
 ```javascript
-// En tu componente Vue
+// In your Vue component
 async function fetchAirspaceData() {
   const response = await fetch('http://localhost:8000/api/v1/airspace?limit=50');
   const geojson = await response.json();
 
-  // Usar con Leaflet
+  // Use with Leaflet
   L.geoJSON(geojson).addTo(map);
 }
 ```
 
-## Próximas Características
+## Upcoming Features
 
-- [ ] Geofencing: Zonas de exclusión aérea
-- [ ] WebSocket support para updates en tiempo real
-- [ ] Filtros avanzados (altitud, velocidad, tipo de aeronave)
-- [ ] Cache de datos para reducir llamadas a OpenSky API
-- [ ] Autenticación y rate limiting
+- [ ] Geofencing: Airspace exclusion zones
+- [ ] WebSocket support for real-time updates
+- [ ] Advanced filters (altitude, velocity, aircraft type)
+- [ ] Data caching to reduce OpenSky API calls
+- [ ] Authentication and rate limiting
 
-## Tecnologías
+## Technologies
 
-- **FastAPI**: Framework web moderno y rápido
-- **OpenSky Network API**: Fuente de datos de aeronaves
-- **Uvicorn**: Servidor ASGI de alto rendimiento
-- **Pydantic**: Validación de datos
-- **Python 3.11+**: Lenguaje de programación
+- **FastAPI**: Modern and fast web framework
+- **OpenSky Network API**: Aircraft data source
+- **Uvicorn**: High-performance ASGI server
+- **Pydantic**: Data validation
+- **Python 3.11+**: Programming language
 
-## Licencia
+## License
 
 MIT
 
-## Autor
+## Author
 
-Proyecto SkySentinel - Sistema Inteligente de Vigilancia Aeroespacial
+SkySentinel Project - Intelligent Aerospace Surveillance System
