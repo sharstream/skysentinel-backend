@@ -1,13 +1,13 @@
-import asyncio
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from python_opensky import OpenSky, BoundingBox, OpenSkyConnectionError, OpenSkyError
 from aiohttp import ClientResponseError
-from typing import List, Optional
+from typing import Optional
 import uvicorn
 import os
 from dotenv import load_dotenv
+from app.oauth2_client import OpenSkyOAuth2Client
 
 # Load environment variables
 load_dotenv()
@@ -26,15 +26,97 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize OAuth2 client
+oauth2_client = OpenSkyOAuth2Client()
+
 # Initialize OpenSky API
-# For authenticated requests, provide username and password
+# Priority: OAuth2 > Basic Auth > Anonymous
 opensky_username = os.getenv("OPENSKY_USERNAME")
 opensky_password = os.getenv("OPENSKY_PASSWORD")
 
-if opensky_username and opensky_password:
+# Note: python-opensky library doesn't natively support OAuth2 bearer tokens
+# If OAuth2 is configured, we'll need to fetch token and use it differently
+if oauth2_client.is_configured():
+    print("🔐 OpenSky OAuth2 configured - using client credentials flow")
+    opensky = OpenSky()  # Initialize without auth, we'll add bearer token per request
+    auth_mode = "oauth2"
+elif opensky_username and opensky_password:
+    print("🔑 OpenSky Basic Auth configured")
     opensky = OpenSky(username=opensky_username, password=opensky_password)
+    auth_mode = "basic"
 else:
+    print("⚠️  OpenSky Anonymous mode - rate limits apply")
     opensky = OpenSky()
+    auth_mode = "anonymous"
+
+
+async def fetch_opensky_states_oauth2(bbox: Optional[BoundingBox] = None):
+    """
+    Fetch states from OpenSky API using OAuth2 bearer token
+
+    Args:
+        bbox: Optional bounding box for regional queries
+
+    Returns:
+        States object with time and states list
+    """
+    import httpx
+
+    # Get OAuth2 token
+    token = await oauth2_client.get_access_token()
+    if not token:
+        raise OpenSkyConnectionError("Failed to obtain OAuth2 access token")
+
+    # Build request URL
+    base_url = "https://opensky-network.org/api/states/all"
+    params = {}
+    if bbox:
+        params = {
+            "lamin": bbox.min_latitude,
+            "lomin": bbox.min_longitude,
+            "lamax": bbox.max_latitude,
+            "lomax": bbox.max_longitude
+        }
+
+    # Make authenticated request
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(base_url, params=params, headers=headers)
+
+        if response.status_code == 401:
+            raise OpenSkyConnectionError("OAuth2 token expired or invalid")
+        elif response.status_code == 429:
+            raise OpenSkyConnectionError("Rate limit exceeded")
+        elif response.status_code != 200:
+            raise OpenSkyConnectionError(f"OpenSky API returned status {response.status_code}")
+
+        data = response.json()
+
+        # Parse response into states object (mimicking python-opensky structure)
+        class State:
+            def __init__(self, state_data):
+                self.icao24 = state_data[0]
+                self.callsign = state_data[1]
+                self.origin_country = state_data[2]
+                self.time_position = state_data[3]
+                self.last_contact = state_data[4]
+                self.longitude = state_data[5]
+                self.latitude = state_data[6]
+                self.barometric_altitude = state_data[7]
+                self.on_ground = state_data[8]
+                self.velocity = state_data[9]
+                self.true_track = state_data[10]
+                self.vertical_rate = state_data[11]
+                self.geo_altitude = state_data[13] if len(state_data) > 13 else None
+                self.category = None  # Not provided in basic API response
+
+        class States:
+            def __init__(self, time, states_data):
+                self.time = time
+                self.states = [State(s) for s in states_data] if states_data else []
+
+        return States(data.get("time"), data.get("states"))
 
 
 def to_geojson(state):
@@ -57,7 +139,7 @@ def to_geojson(state):
             "last_contact": state.last_contact,
             "time_position": state.time_position,
             "vertical_rate": state.vertical_rate,
-            "category": state.category.value if state.category else None
+            "category": state.category.value if hasattr(state.category, 'value') and state.category else None
         }
     }
 
@@ -141,12 +223,12 @@ async def get_airspace(limit: int = 50):
         GeoJSON FeatureCollection with aircraft positions
     """
     try:
-        # Represents the state of the airspace as seen by OpenSky at a particular time.
-        # It has the following fields: by reference to http://openskynetwork.github.io/opensky-api/python.html#opensky_api.OpenSkyStates
-        # time: int - in seconds since epoch (Unix time stamp). Gives the validity period of all states.
-        # All vectors represent the state of a vehicle with the interval of 1 second.
-        # states: list [StateVector] - a list of StateVector or is None if there have been no states received.
-        states = await opensky.get_states()
+        # Use OAuth2 if configured, otherwise use python-opensky library
+        if auth_mode == "oauth2":
+            states = await fetch_opensky_states_oauth2()
+        else:
+            states = await opensky.get_states()
+
         if not states or not states.states:
             return {"type": "FeatureCollection", "features": []}
 
@@ -162,7 +244,8 @@ async def get_airspace(limit: int = 50):
             "features": features,
             "metadata": {
                 "total_aircraft": len(features),
-                "timestamp": states.time
+                "timestamp": states.time,
+                "auth_mode": auth_mode
             }
         }
     except (OpenSkyConnectionError, OpenSkyError) as e:
@@ -204,7 +287,12 @@ async def get_airspace_region(
             min_longitude=min_lon,
             max_longitude=max_lon
         )
-        states = await opensky.get_states(bounding_box=bbox)
+
+        # Use OAuth2 if configured, otherwise use python-opensky library
+        if auth_mode == "oauth2":
+            states = await fetch_opensky_states_oauth2(bbox)
+        else:
+            states = await opensky.get_states(bounding_box=bbox)
 
         if not states or not states.states:
             return {"type": "FeatureCollection", "features": []}
@@ -226,7 +314,8 @@ async def get_airspace_region(
                     "min_lon": min_lon,
                     "max_lon": max_lon
                 },
-                "timestamp": states.time
+                "timestamp": states.time,
+                "auth_mode": auth_mode
             }
         }
     except (OpenSkyConnectionError, OpenSkyError) as e:
