@@ -2,7 +2,7 @@ from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from python_opensky import OpenSky, BoundingBox, OpenSkyConnectionError, OpenSkyError
-from aiohttp import ClientResponseError
+from aiohttp import ClientResponseError, BasicAuth
 from typing import Optional
 import uvicorn
 import os
@@ -42,7 +42,9 @@ if oauth2_client.is_configured():
     auth_mode = "oauth2"
 elif opensky_username and opensky_password:
     print("🔑 OpenSky Basic Auth configured")
-    opensky = OpenSky(username=opensky_username, password=opensky_password)
+    # Create BasicAuth object for authentication
+    basic_auth = BasicAuth(login=opensky_username, password=opensky_password)
+    opensky = OpenSky(_auth=basic_auth)
     auth_mode = "basic"
 else:
     print("⚠️  OpenSky Anonymous mode - rate limits apply")
@@ -58,7 +60,7 @@ async def fetch_opensky_states_oauth2(bbox: Optional[BoundingBox] = None):
         bbox: Optional bounding box for regional queries
 
     Returns:
-        States object with time and states list
+        Tuple of (States object with time and states list, rate_limit_info dict)
     """
     import httpx
 
@@ -84,10 +86,26 @@ async def fetch_opensky_states_oauth2(bbox: Optional[BoundingBox] = None):
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(base_url, params=params, headers=headers)
 
+        # Extract rate limit headers
+        rate_limit_info = {
+            "remaining": response.headers.get("X-Rate-Limit-Remaining"),
+            "retry_after_seconds": None
+        }
+
         if response.status_code == 401:
             raise OpenSkyConnectionError("OAuth2 token expired or invalid")
         elif response.status_code == 429:
-            raise OpenSkyConnectionError("Rate limit exceeded")
+            # Extract retry-after header for rate limit errors
+            retry_after = response.headers.get("X-Rate-Limit-Retry-After-Seconds")
+            rate_limit_info["retry_after_seconds"] = int(retry_after) if retry_after else None
+
+            # Create custom error with rate limit info
+            error = OpenSkyConnectionError(
+                f"Rate limit exceeded. Retry after {retry_after} seconds" if retry_after
+                else "Rate limit exceeded"
+            )
+            error.rate_limit_info = rate_limit_info
+            raise error
         elif response.status_code != 200:
             raise OpenSkyConnectionError(f"OpenSky API returned status {response.status_code}")
 
@@ -116,7 +134,7 @@ async def fetch_opensky_states_oauth2(bbox: Optional[BoundingBox] = None):
                 self.time = time
                 self.states = [State(s) for s in states_data] if states_data else []
 
-        return States(data.get("time"), data.get("states"))
+        return States(data.get("time"), data.get("states")), rate_limit_info
 
 
 def to_geojson(state):
@@ -157,11 +175,18 @@ def handle_opensky_error(e: Exception) -> JSONResponse:
     error_type = "SERVER_ERROR"
     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
     detail = str(e)
+    rate_limit_info = None
 
     # Check if it's an OpenSkyConnectionError with an underlying HTTP error
     if isinstance(e, OpenSkyConnectionError):
+        # Check if the error has rate limit info attached
+        if hasattr(e, 'rate_limit_info'):
+            rate_limit_info = e.rate_limit_info
+            error_type = "RATE_LIMIT"
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            detail = str(e)
         # Check the underlying cause for HTTP status codes
-        if e.__cause__ and isinstance(e.__cause__, ClientResponseError):
+        elif e.__cause__ and isinstance(e.__cause__, ClientResponseError):
             http_status = e.__cause__.status
 
             if http_status == 429:
@@ -191,13 +216,19 @@ def handle_opensky_error(e: Exception) -> JSONResponse:
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE
             detail = "Failed to connect to OpenSky API. Please check your internet connection."
 
+    response_content = {
+        "error": error_type,
+        "detail": detail,
+        "message": detail  # Legacy field for backwards compatibility
+    }
+
+    # Add rate limit info if available
+    if rate_limit_info:
+        response_content["rate_limit"] = rate_limit_info
+
     return JSONResponse(
         status_code=status_code,
-        content={
-            "error": error_type,
-            "detail": detail,
-            "message": detail  # Legacy field for backwards compatibility
-        }
+        content=response_content
     )
 
 
@@ -220,17 +251,22 @@ async def get_airspace(limit: int = 50):
         limit: Maximum number of aircraft to return (default: 50)
 
     Returns:
-        GeoJSON FeatureCollection with aircraft positions
+        GeoJSON FeatureCollection with aircraft positions and rate limit info
     """
     try:
+        rate_limit_info = None
+
         # Use OAuth2 if configured, otherwise use python-opensky library
         if auth_mode == "oauth2":
-            states = await fetch_opensky_states_oauth2()
+            states, rate_limit_info = await fetch_opensky_states_oauth2()
         else:
             states = await opensky.get_states()
 
         if not states or not states.states:
-            return {"type": "FeatureCollection", "features": []}
+            response = {"type": "FeatureCollection", "features": []}
+            if rate_limit_info:
+                response["rate_limit"] = rate_limit_info
+            return response
 
         # Filter aircraft with valid position
         features = [
@@ -239,7 +275,7 @@ async def get_airspace(limit: int = 50):
             if s.longitude is not None and s.latitude is not None
         ]
 
-        return {
+        response = {
             "type": "FeatureCollection",
             "features": features,
             "metadata": {
@@ -248,6 +284,12 @@ async def get_airspace(limit: int = 50):
                 "auth_mode": auth_mode
             }
         }
+
+        # Add rate limit info to response if available
+        if rate_limit_info:
+            response["rate_limit"] = rate_limit_info
+
+        return response
     except (OpenSkyConnectionError, OpenSkyError) as e:
         return handle_opensky_error(e)
     except Exception as e:
@@ -278,9 +320,11 @@ async def get_airspace_region(
         max_lon: Maximum longitude
 
     Returns:
-        GeoJSON FeatureCollection with aircraft positions in the region
+        GeoJSON FeatureCollection with aircraft positions in the region and rate limit info
     """
     try:
+        rate_limit_info = None
+
         bbox = BoundingBox(
             min_latitude=min_lat,
             max_latitude=max_lat,
@@ -290,12 +334,15 @@ async def get_airspace_region(
 
         # Use OAuth2 if configured, otherwise use python-opensky library
         if auth_mode == "oauth2":
-            states = await fetch_opensky_states_oauth2(bbox)
+            states, rate_limit_info = await fetch_opensky_states_oauth2(bbox)
         else:
             states = await opensky.get_states(bounding_box=bbox)
 
         if not states or not states.states:
-            return {"type": "FeatureCollection", "features": []}
+            response = {"type": "FeatureCollection", "features": []}
+            if rate_limit_info:
+                response["rate_limit"] = rate_limit_info
+            return response
 
         features = [
             to_geojson(s)
@@ -303,7 +350,7 @@ async def get_airspace_region(
             if s.longitude is not None and s.latitude is not None
         ]
 
-        return {
+        response = {
             "type": "FeatureCollection",
             "features": features,
             "metadata": {
@@ -318,6 +365,12 @@ async def get_airspace_region(
                 "auth_mode": auth_mode
             }
         }
+
+        # Add rate limit info to response if available
+        if rate_limit_info:
+            response["rate_limit"] = rate_limit_info
+
+        return response
     except (OpenSkyConnectionError, OpenSkyError) as e:
         return handle_opensky_error(e)
     except Exception as e:
@@ -327,6 +380,51 @@ async def get_airspace_region(
                 "error": "SERVER_ERROR",
                 "detail": f"An unexpected error occurred: {str(e)}",
                 "message": f"An unexpected error occurred: {str(e)}"
+            }
+        )
+
+
+@app.get("/api/v1/test-rate-limits")
+async def test_rate_limits():
+    """
+    Test endpoint to verify rate limit header extraction
+    Makes a direct request to OpenSky API to test header parsing
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Make anonymous request to OpenSky API
+            url = "https://opensky-network.org/api/states/all"
+            params = {
+                "lamin": 40.0,
+                "lomin": -74.0,
+                "lamax": 40.1,
+                "lomax": -73.9
+            }
+
+            response = await client.get(url, params=params)
+
+            # Extract rate limit headers (same logic as OAuth2 path)
+            rate_limit_info = {
+                "remaining": response.headers.get("X-Rate-Limit-Remaining"),
+                "retry_after_seconds": response.headers.get("X-Rate-Limit-Retry-After-Seconds")
+            }
+
+            return {
+                "status": "success",
+                "opensky_status_code": response.status_code,
+                "rate_limit": rate_limit_info,
+                "message": "Rate limit headers extracted successfully",
+                "all_headers": dict(response.headers)
+            }
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "error": "TEST_ERROR",
+                "detail": str(e)
             }
         )
 
@@ -353,7 +451,7 @@ async def get_status():
             min_longitude=0.0,
             max_longitude=0.1
         )
-        states = await opensky.get_states(bounding_box=test_bbox)
+        _ = await opensky.get_states(bounding_box=test_bbox)
         opensky_status = "OPERATIONAL"
     except (OpenSkyConnectionError, OpenSkyError) as e:
         # Determine the specific error type
