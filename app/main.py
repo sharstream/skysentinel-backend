@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 import httpx
 import uvicorn
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 from app.oauth2_client import OpenSkyOAuth2Client
 
@@ -16,6 +17,52 @@ app = FastAPI(
     description="Sistema Inteligente de Vigilancia Aeroespacial - Refactored with OAuth2",
     version="2.0.0"
 )
+
+# ============================================================================
+# IN-MEMORY CACHE (10-second TTL)
+# ============================================================================
+# Simple cache to prevent excessive API calls during development hot-reload
+# and rapid requests. This dramatically reduces rate limit consumption.
+_api_cache = {
+    "data": None,
+    "rate_limit": None,
+    "timestamp": None,
+    "ttl_seconds": 10,
+    "endpoint": None,
+    "params_hash": None
+}
+
+def _get_cache_key(endpoint: str, params: Optional[Dict[str, Any]]) -> str:
+    """Generate a cache key from endpoint and params"""
+    import json
+    params_str = json.dumps(params or {}, sort_keys=True)
+    return f"{endpoint}:{params_str}"
+
+def _get_cached_response(endpoint: str, params: Optional[Dict[str, Any]]) -> Optional[tuple]:
+    """Get cached response if available and not expired"""
+    if _api_cache["data"] is None:
+        return None
+
+    cache_key = _get_cache_key(endpoint, params)
+    if cache_key != _api_cache.get("cache_key"):
+        return None
+
+    cache_age = (datetime.now() - _api_cache["timestamp"]).total_seconds()
+    if cache_age < _api_cache["ttl_seconds"]:
+        print(f"✨ Cache HIT! Age: {cache_age:.1f}s (saved 1 API credit)")
+        return _api_cache["data"], _api_cache["rate_limit"]
+
+    print(f"⏱️  Cache EXPIRED (age: {cache_age:.1f}s)")
+    return None
+
+def _update_cache(endpoint: str, params: Optional[Dict[str, Any]], data: Dict, rate_limit: Dict):
+    """Update cache with new data"""
+    cache_key = _get_cache_key(endpoint, params)
+    _api_cache["data"] = data
+    _api_cache["rate_limit"] = rate_limit
+    _api_cache["timestamp"] = datetime.now()
+    _api_cache["cache_key"] = cache_key
+    print(f"💾 Cache UPDATED (TTL: {_api_cache['ttl_seconds']}s)")
 
 # Enable CORS for frontend integration
 app.add_middleware(
@@ -44,15 +91,17 @@ else:
 async def fetch_opensky_api(
     endpoint: str = "/api/states/all",
     params: Optional[Dict[str, Any]] = None,
-    use_auth: bool = True
+    use_auth: bool = True,
+    use_cache: bool = True
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """
-    Unified function to fetch data from OpenSky API with automatic retry and rate limit tracking
+    Unified function to fetch data from OpenSky API with automatic retry, rate limit tracking, and caching
 
     Args:
         endpoint: API endpoint path (default: /api/states/all)
         params: Query parameters dictionary
         use_auth: Whether to use OAuth2 authentication
+        use_cache: Whether to use 10-second in-memory cache (default: True)
 
     Returns:
         Tuple of (response_data, rate_limit_info)
@@ -61,6 +110,12 @@ async def fetch_opensky_api(
         httpx.HTTPStatusError: On HTTP errors
         Exception: On other errors
     """
+    # Check cache first
+    if use_cache:
+        cached = _get_cached_response(endpoint, params)
+        if cached is not None:
+            return cached
+
     base_url = f"https://opensky-network.org{endpoint}"
     headers = {}
 
@@ -98,9 +153,15 @@ async def fetch_opensky_api(
 
     # Use OAuth2 client's retry mechanism if authenticated
     if use_auth and oauth2_client.is_configured():
-        return await oauth2_client.execute_with_retry(_make_request)
+        result = await oauth2_client.execute_with_retry(_make_request)
     else:
-        return await _make_request()
+        result = await _make_request()
+
+    # Update cache with fresh data
+    if use_cache:
+        _update_cache(endpoint, params, result[0], result[1])
+
+    return result
 
 
 # ============================================================================
@@ -388,28 +449,23 @@ async def get_status():
     """
     Get backend and OpenSky API status with rate limit information
 
+    NOTE: This endpoint does NOT make an actual OpenSky API call to avoid wasting credits.
+    It only checks if OAuth2 is configured and returns cached rate limit info.
+
     Returns:
         Status information including backend health, authentication mode, and rate limits
     """
     backend_status = "OPERATIONAL"
     opensky_status = "UNKNOWN"
-    rate_limit_info = None
 
-    try:
-        # Make a minimal request to check API connectivity
-        params = {
-            "lamin": 0.0,
-            "lomin": 0.0,
-            "lamax": 0.1,
-            "lomax": 0.1
-        }
-
-        _, rate_limit_info = await fetch_opensky_api(params=params)
-        opensky_status = "OPERATIONAL"
-
-    except Exception as e:
-        opensky_status = "ERROR"
-        print(f"Status check failed: {e}")
+    # Check OAuth2 configuration without making an API call
+    if oauth2_client.is_configured():
+        if oauth2_client.is_token_valid():
+            opensky_status = "OPERATIONAL"
+        else:
+            opensky_status = "TOKEN_EXPIRED"
+    else:
+        opensky_status = "NOT_CONFIGURED"
 
     response = {
         "backend": {
@@ -420,7 +476,7 @@ async def get_status():
         "opensky": {
             "status": opensky_status,
             "auth_mode": auth_mode,
-            "rate_limit": rate_limit_info
+            "rate_limit": None  # Rate limit info comes from actual data endpoints
         }
     }
 
