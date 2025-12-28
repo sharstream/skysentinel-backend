@@ -19,6 +19,28 @@ app = FastAPI(
 )
 
 # ============================================================================
+# DEFAULT BOUNDING BOX - GEORGIA STATE COVERAGE
+# ============================================================================
+# OpenSky charges by area square degrees:
+#   0-25 sq deg = 1 credit
+#   25-100 sq deg = 2 credits
+#   100-400 sq deg = 3 credits
+#   >400 or all = 4 credits
+#
+# Georgia state coverage (centered on Hartsfield-Jackson Atlanta International Airport):
+#   Center: 33.6407°N, -84.4277°W (ATL Airport)
+#   Coverage: Most of Georgia state (North GA mountains to Middle GA, Augusta to AL border)
+#   Area: 24.9 sq deg (just under 25 sq deg threshold for maximum coverage at 1 credit)
+#   Cost: 1 credit per request (vs 4 credits for global)
+#   Savings: 75% reduction in API consumption vs global queries
+DEFAULT_BBOX = {
+    "lamin": 31.15,   # South - Middle Georgia (Macon area)
+    "lamax": 36.14,   # North - North Georgia mountains
+    "lomin": -86.92,  # West - Alabama border
+    "lomax": -81.93   # East - Augusta area
+}
+
+# ============================================================================
 # IN-MEMORY CACHE (45-second TTL)
 # ============================================================================
 # Perfect balance between Excellent (30s) and Very Good (60s) real-time feel
@@ -305,7 +327,10 @@ def handle_api_error(e: Exception) -> JSONResponse:
 @app.get("/api/v1/airspace")
 async def get_airspace(limit: int = Query(default=50, ge=1, le=500)):
     """
-    Get current airspace data as GeoJSON FeatureCollection
+    Get current airspace data as GeoJSON FeatureCollection for Georgia state
+
+    Defaults to Georgia state bounding box centered on Atlanta Airport (24.9 sq deg = 1 credit vs 4 credits for global)
+    Coverage: North Georgia mountains to Middle Georgia, Augusta area to Alabama border
 
     Args:
         limit: Maximum number of aircraft to return (1-500)
@@ -314,12 +339,20 @@ async def get_airspace(limit: int = Query(default=50, ge=1, le=500)):
         GeoJSON FeatureCollection with aircraft positions and rate limit info
     """
     try:
-        data, rate_limit_info = await fetch_opensky_api()
+        # Use Georgia state bounding box by default (24.9 sq deg = 1 credit vs 4 credits for global)
+        data, rate_limit_info = await fetch_opensky_api(params=DEFAULT_BBOX)
 
         states = parse_states(data)[:limit]
         timestamp = data.get("time", 0)
 
-        return create_geojson_response(states, timestamp, rate_limit_info)
+        # Add bounding box to metadata for transparency
+        metadata = {
+            "bounding_box": DEFAULT_BBOX,
+            "area_coverage": "Georgia State (North GA mountains, Middle GA, Augusta area, centered on ATL Airport)",
+            "area_square_degrees": 24.9
+        }
+
+        return create_geojson_response(states, timestamp, rate_limit_info, metadata)
 
     except Exception as e:
         return handle_api_error(e)
