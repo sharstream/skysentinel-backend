@@ -300,17 +300,7 @@ def handle_api_error(e: Exception) -> JSONResponse:
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
-
-@app.get("/")
-async def root():
-    """Health check endpoint"""
-    return {
-        "service": "SkySentinel API",
-        "status": "operational",
-        "version": "2.0.0",
-        "auth_mode": auth_mode
-    }
-
+# Note: Root endpoint (GET /) removed - use GET /api/v1/status for health checks
 
 @app.get("/api/v1/airspace")
 async def get_airspace(limit: int = Query(default=50, ge=1, le=500)):
