@@ -468,6 +468,216 @@ async def get_states_aircraft(
         return handle_api_error(e)
 
 
+@app.get("/api/v1/tracks/{icao24}")
+async def get_aircraft_track(
+    icao24: str,
+    time: Optional[int] = Query(default=None, description="Unix timestamp (seconds). If omitted, uses current time.")
+):
+    """
+    Retrieve trajectory/track data for a specific aircraft by ICAO24 address
+
+    Returns waypoints, first/last positions, and all on-ground state changes.
+    Tracks show the complete flight path of an aircraft.
+
+    Args:
+        icao24: ICAO24 address of aircraft (e.g., 3c6444)
+        time: Unix timestamp in seconds (optional, defaults to current time if not provided)
+
+    Returns:
+        Track data including waypoints, path, and ground state changes with rate limit info
+
+    Note:
+        - OpenSky API endpoint: https://openskynetwork.github.io/opensky-api/rest.html#track-by-aircraft
+        - ⚠️ REQUIRES SPECIAL PERMISSIONS: This endpoint may require OpenSky researcher/contributor access
+        - Standard OAuth2 authentication may return 403 Forbidden
+        - Consider using /api/v1/states/aircraft for real-time position tracking instead
+    """
+    try:
+        # Use current time if not provided
+        import time as time_module
+        if time is None:
+            time = int(time_module.time())
+
+        # Build endpoint and params
+        endpoint = f"/tracks/all"
+        params = {
+            "icao24": icao24.lower(),
+            "time": time
+        }
+
+        # Fetch track data (do not use cache for historical data)
+        data, rate_limit_info = await fetch_opensky_api(
+            endpoint=endpoint,
+            params=params,
+            use_cache=False  # Historical data shouldn't be cached
+        )
+
+        # Transform track data to GeoJSON LineString
+        if not data or "path" not in data:
+            return {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": []
+                },
+                "properties": {
+                    "icao24": icao24,
+                    "callsign": data.get("callsign", "N/A") if data else "N/A",
+                    "start_time": data.get("startTime", time) if data else time,
+                    "end_time": data.get("endTime", time) if data else time,
+                    "waypoint_count": 0
+                },
+                "metadata": {
+                    "message": "No track data found for this aircraft at the specified time"
+                },
+                "rate_limit": rate_limit_info
+            }
+
+        # Extract waypoints from path data
+        # Each waypoint: [time, latitude, longitude, baro_altitude, true_track, on_ground]
+        path = data.get("path", [])
+        coordinates = []
+        waypoints = []
+        ground_segments = []
+
+        for i, point in enumerate(path):
+            if len(point) >= 3 and point[1] is not None and point[2] is not None:
+                # GeoJSON format: [longitude, latitude, altitude]
+                lon, lat = point[2], point[1]
+                alt = point[3] if len(point) > 3 and point[3] is not None else 0
+                coordinates.append([lon, lat, alt])
+
+                waypoint = {
+                    "time": point[0],
+                    "latitude": lat,
+                    "longitude": lon,
+                    "altitude": alt,
+                    "heading": point[4] if len(point) > 4 else None,
+                    "on_ground": point[5] if len(point) > 5 else False
+                }
+                waypoints.append(waypoint)
+
+                # Track ground state changes
+                if len(point) > 5 and point[5]:
+                    ground_segments.append({
+                        "index": i,
+                        "time": point[0],
+                        "position": [lat, lon]
+                    })
+
+        return {
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": coordinates
+            },
+            "properties": {
+                "icao24": data.get("icao24", icao24),
+                "callsign": data.get("callsign", "N/A"),
+                "start_time": data.get("startTime", time),
+                "end_time": data.get("endTime", time),
+                "waypoint_count": len(waypoints),
+                "ground_segments": len(ground_segments)
+            },
+            "waypoints": waypoints,
+            "ground_state_changes": ground_segments,
+            "metadata": {
+                "first_position": waypoints[0] if waypoints else None,
+                "last_position": waypoints[-1] if waypoints else None,
+                "duration_seconds": data.get("endTime", time) - data.get("startTime", time) if data else 0
+            },
+            "rate_limit": rate_limit_info
+        }
+
+    except Exception as e:
+        return handle_api_error(e)
+
+
+@app.get("/api/v1/flights/all")
+async def get_all_flights(
+    begin: int = Query(..., description="Start of time interval (Unix timestamp in seconds)"),
+    end: int = Query(..., description="End of time interval (Unix timestamp in seconds)")
+):
+    """
+    Retrieve all flights for a specific time interval
+
+    Returns departure and arrival airports, times, and aircraft information for all flights
+    within the specified time window. Use these results to get detailed track information.
+
+    Args:
+        begin: Start time as Unix timestamp in seconds
+        end: End time as Unix timestamp in seconds
+
+    Returns:
+        List of flights with departure/arrival info and rate limit info
+
+    Note:
+        - OpenSky API endpoint: https://openskynetwork.github.io/opensky-api/rest.html#flights-all
+        - Time interval must not exceed 2 hours (7200 seconds)
+        - ⚠️ REQUIRES SPECIAL PERMISSIONS: This endpoint may require OpenSky researcher/contributor access
+        - Standard OAuth2 authentication may return 403 Forbidden
+        - Consider using /api/v1/airspace for real-time aircraft monitoring instead
+    """
+    try:
+        # Validate time interval (max 2 hours per OpenSky API)
+        if end - begin > 7200:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "error": "INVALID_TIME_INTERVAL",
+                    "detail": "Time interval exceeds maximum of 2 hours (7200 seconds)",
+                    "begin": begin,
+                    "end": end,
+                    "interval_seconds": end - begin
+                }
+            )
+
+        # Build endpoint and params
+        endpoint = "/flights/all"
+        params = {
+            "begin": begin,
+            "end": end
+        }
+
+        # Fetch flights data (do not use cache for historical data)
+        data, rate_limit_info = await fetch_opensky_api(
+            endpoint=endpoint,
+            params=params,
+            use_cache=False  # Historical data shouldn't be cached
+        )
+
+        # Transform flights data
+        flights = []
+        if data and isinstance(data, list):
+            for flight in data:
+                flights.append({
+                    "icao24": flight.get("icao24"),
+                    "callsign": flight.get("callsign", "").strip() if flight.get("callsign") else "N/A",
+                    "departure_airport": flight.get("estDepartureAirport") or "Unknown",
+                    "arrival_airport": flight.get("estArrivalAirport") or "Unknown",
+                    "departure_time": flight.get("firstSeen"),
+                    "arrival_time": flight.get("lastSeen"),
+                    "departure_horizontal_distance": flight.get("estDepartureAirportHorizDistance"),
+                    "departure_vertical_distance": flight.get("estDepartureAirportVertDistance"),
+                    "arrival_horizontal_distance": flight.get("estArrivalAirportHorizDistance"),
+                    "arrival_vertical_distance": flight.get("estArrivalAirportVertDistance")
+                })
+
+        return {
+            "flights": flights,
+            "metadata": {
+                "begin": begin,
+                "end": end,
+                "interval_seconds": end - begin,
+                "total_flights": len(flights)
+            },
+            "rate_limit": rate_limit_info
+        }
+
+    except Exception as e:
+        return handle_api_error(e)
+
+
 @app.get("/api/v1/status")
 async def get_status():
     """
