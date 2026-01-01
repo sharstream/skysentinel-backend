@@ -4,3 +4,11 @@ python-opensky
 pydantic==2.10.4
 python-dotenv==1.0.1
 httpx==0.28.1
+
+# FastMCP for AI Agent Integration (pinned to v2.x for stability)
+fastmcp>=2.11.0,<3.0.0
+mcp>=1.12.0,<2.0.0
+
+# Additional dependencies for AI agent ecosystem
+websockets>=13.0
+redis>=5.0.0  # For production session storage

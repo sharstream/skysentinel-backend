@@ -507,6 +507,42 @@ async def get_status():
     return response
 
 
+# ============================================================================
+# MCP AND AI AGENT INTEGRATION
+# ============================================================================
+
+# Include MCP and AI agent routers
+try:
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    
+    from src.api.session_manager import router as session_router
+    from src.api.mcp_endpoints import router as mcp_router
+    from src.agents.message_bus import handle_agent_websocket
+    from fastapi import WebSocket
+    
+    # Register session management endpoints
+    app.include_router(session_router)
+    print("✓ AI Session Management endpoints registered")
+    
+    # Register MCP endpoints
+    app.include_router(mcp_router)
+    print("✓ MCP endpoints registered")
+    
+    # WebSocket endpoint for agent message bus
+    @app.websocket("/ws/agents/{agent_id}")
+    async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str):
+        """WebSocket endpoint for multi-agent coordination"""
+        await handle_agent_websocket(websocket, agent_id)
+    
+    print("✓ Agent message bus WebSocket endpoint registered")
+    print("✓ AI Agent ecosystem initialized successfully")
+    
+except ImportError as e:
+    print(f"⚠️  AI Agent integration not available: {e}")
+    print("   Install dependencies: pip install fastmcp>=2.11.0,<3.0.0")
+
+
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 8000))
