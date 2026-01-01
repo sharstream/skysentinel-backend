@@ -1,0 +1,74 @@
+[project]
+name = "skysentinel-mcp-server"
+version = "2.0.0"
+description = "SkySentinel - Aerospace Control MCP Server with AI Agent Orchestration"
+requires-python = ">=3.11"
+authors = [
+    {name = "SkySentinel Team"}
+]
+readme = "README.md"
+
+dependencies = [
+    # Core FastAPI framework
+    "fastapi>=0.115.6",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.10.4",
+    "python-dotenv>=1.0.1",
+    "httpx>=0.28.1",
+    
+    # FastMCP - Pinned to v2.x line for stability
+    # Prevents breaking changes from v3.0 affecting production
+    "fastmcp>=2.11.0,<3.0.0",
+    
+    # MCP protocol - also pinned for stability
+    "mcp>=1.12.0,<2.0.0",
+    
+    # WebSocket support for multi-agent coordination
+    "websockets>=13.0",
+    
+    # OpenSky integration
+    "python-opensky",
+]
+
+[project.optional-dependencies]
+# Development dependencies
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+]
+
+# Production dependencies
+prod = [
+    "redis>=5.0.0",  # For session storage
+]
+
+# FastMCP v3 preview for testing (don't install by default)
+fastmcp-v3-preview = [
+    "fastmcp>=3.0.0a1",  # Alpha/beta versions for testing
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["src", "app"]
+omit = ["*/tests/*", "*/venv/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
