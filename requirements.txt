@@ -1,8 +1,8 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+fastapi>=0.115.0
+uvicorn==0.34.0
 python-opensky
-pydantic==2.10.4
-python-dotenv==1.0.1
+pydantic>=2.11.7,<3.0.0
+python-dotenv>=1.0.0,<2.0.0
 httpx==0.28.1
 
 # FastMCP for AI Agent Integration (pinned to v2.x for stability)
