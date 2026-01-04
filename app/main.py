@@ -270,6 +270,11 @@ def create_geojson_response(states: List[State], timestamp: int, rate_limit_info
 
 def handle_api_error(e: Exception) -> JSONResponse:
     """Handle API errors and return appropriate JSON response"""
+    # Debug logging
+    print(f"❌ API Error: {type(e).__name__}: {str(e)}")
+    import traceback
+    traceback.print_exc()
+
     error_type = "SERVER_ERROR"
     status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
     detail = str(e)
